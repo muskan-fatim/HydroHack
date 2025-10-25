@@ -1,29 +1,31 @@
-
-import { Mastra } from '@mastra/core/mastra';
-import { PinoLogger } from '@mastra/loggers';
-import { LibSQLStore } from '@mastra/libsql';
-import { weatherWorkflow } from './workflows/weather-workflow';
-import { waterReminderAgent } from './agents/waterReminderAgent';
-import { toolCallAppropriatenessScorer, completenessScorer, translationScorer } from './scorers/weather-scorer';
+import { Mastra } from "@mastra/core";
+import { PinoLogger } from "@mastra/loggers";
+import { LibSQLStore } from "@mastra/libsql";
+import { HydroHackworkflow } from "./workflows/HydroHackworkflow";
+import { waterReminderAgent } from "./agents/waterReminderAgent";
+import {
+  toolCallAppropriatenessScorer,
+  completenessScorer,
+  translationScorer,
+} from "./scorers/weather-scorer";
+import "dotenv/config";
 
 export const mastra = new Mastra({
-  workflows: { weatherWorkflow },
+  workflows: { HydroHackworkflow },
   agents: { waterReminderAgent },
-  scorers: { toolCallAppropriatenessScorer, completenessScorer, translationScorer },
+  scorers: {
+    toolCallAppropriatenessScorer,
+    completenessScorer,
+    translationScorer,
+  },
   storage: new LibSQLStore({
-    // stores observability, scores, ... into memory storage, if it needs to persist, change to file:../mastra.db
-    url: ":memory:",
+    url: ":memory:", // use "file:../mastra.db" to persist data
   }),
   logger: new PinoLogger({
-    name: 'Mastra',
-    level: 'info',
+    name: "Mastra",
+    level: "info",
   }),
-  telemetry: {
-    // Telemetry is deprecated and will be removed in the Nov 4th release
-    enabled: false, 
-  },
   observability: {
-    // Enables DefaultExporter and CloudExporter for AI tracing
-    default: { enabled: true }, 
+    default: { enabled: true },
   },
 });
