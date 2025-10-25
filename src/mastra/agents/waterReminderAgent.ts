@@ -1,7 +1,8 @@
 import { Agent } from '@mastra/core/agent';
 import { Memory } from '@mastra/memory';
 import { LibSQLStore } from '@mastra/libsql';
-import { hydrationTool } from '../tools/hydration-tool';
+import { hydrationTool } from '../tools/hydrationTool'; // Correct import
+import { reminderTool } from '../tools/reminderTool'; // Correct import
 
 export const waterReminderAgent = new Agent({
   name: 'Water Reminder Agent',
@@ -15,7 +16,7 @@ export const waterReminderAgent = new Agent({
     - Keep tone positive, short, and motivational.
   `,
   model: 'google/gemini-flash-1.5',
-  tools: { hydrationTool },
+  tools: { hydrationTool, reminderTool }, // Corrected tools reference
   memory: new Memory({
     storage: new LibSQLStore({
       url: 'file:../mastra.db',
