@@ -1,184 +1,154 @@
-import { createStep, createWorkflow } from '@mastra/core/workflows';
-import { z } from 'zod';
+import { createStep, createWorkflow } from "@mastra/core/workflows";
+import { z } from "zod";
 
-const forecastSchema = z.object({
-  date: z.string(),
-  maxTemp: z.number(),
-  minTemp: z.number(),
-  precipitationChance: z.number(),
-  condition: z.string(),
-  location: z.string(),
+// --- SCHEMAS ---
+
+const userProfileSchema = z.object({
+  userId: z.string(),
+  weightKg: z.number().positive(),
+  activityLevel: z.enum(["sedentary", "moderate", "active", "athlete"]),
+  timezone: z.string(),
 });
 
-function getWeatherCondition(code: number): string {
-  const conditions: Record<number, string> = {
-    0: 'Clear sky',
-    1: 'Mainly clear',
-    2: 'Partly cloudy',
-    3: 'Overcast',
-    45: 'Foggy',
-    48: 'Depositing rime fog',
-    51: 'Light drizzle',
-    53: 'Moderate drizzle',
-    55: 'Dense drizzle',
-    61: 'Slight rain',
-    63: 'Moderate rain',
-    65: 'Heavy rain',
-    71: 'Slight snow fall',
-    73: 'Moderate snow fall',
-    75: 'Heavy snow fall',
-    95: 'Thunderstorm',
-  };
-  return conditions[code] || 'Unknown';
-}
+const waterGoalSchema = z.object({
+  dailyGoalMl: z.number().int().positive(),
+  reasoning: z.string(),
+});
 
-const fetchWeather = createStep({
-  id: 'fetch-weather',
-  description: 'Fetches weather forecast for a given city',
+const reminderScheduleSchema = z.object({
+  schedule: z.array(
+    z.object({
+      time: z.string().describe("HH:MM format for reminder"),
+      amountMl: z.number().int().positive(),
+      message: z.string().describe("The personalized reminder message"),
+    })
+  ),
+  totalVolume: z.number().int().positive().describe("The sum of all amountsMl"),
+});
+
+// --- STEPS ---
+
+const retrieveUserProfile = createStep({
+  id: "retrieve-user-profile",
+  description: "Fetches user details needed for water intake calculation",
   inputSchema: z.object({
-    city: z.string().describe('The city to get the weather for'),
+    userId: z.string().describe("The ID of the user"),
   }),
-  outputSchema: forecastSchema,
+  outputSchema: userProfileSchema,
   execute: async ({ inputData }) => {
-    if (!inputData) {
-      throw new Error('Input data not found');
-    }
-
-    const geocodingUrl = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(inputData.city)}&count=1`;
-    const geocodingResponse = await fetch(geocodingUrl);
-    const geocodingData = (await geocodingResponse.json()) as {
-      results: { latitude: number; longitude: number; name: string }[];
-    };
-
-    if (!geocodingData.results?.[0]) {
-      throw new Error(`Location '${inputData.city}' not found`);
-    }
-
-    const { latitude, longitude, name } = geocodingData.results[0];
-
-    const weatherUrl = `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current=precipitation,weathercode&timezone=auto,&hourly=precipitation_probability,temperature_2m`;
-    const response = await fetch(weatherUrl);
-    const data = (await response.json()) as {
-      current: {
-        time: string;
-        precipitation: number;
-        weathercode: number;
+    // --- MOCK IMPLEMENTATION ---
+    if (inputData.userId === "user-123") {
+      return {
+        userId: "user-123",
+        weightKg: 75,
+        activityLevel: "moderate",
+        timezone: "America/Los_Angeles",
       };
-      hourly: {
-        precipitation_probability: number[];
-        temperature_2m: number[];
-      };
-    };
-
-    const forecast = {
-      date: new Date().toISOString(),
-      maxTemp: Math.max(...data.hourly.temperature_2m),
-      minTemp: Math.min(...data.hourly.temperature_2m),
-      condition: getWeatherCondition(data.current.weathercode),
-      precipitationChance: data.hourly.precipitation_probability.reduce(
-        (acc, curr) => Math.max(acc, curr),
-        0,
-      ),
-      location: name,
-    };
-
-    return forecast;
+    }
+    throw new Error(`User ${inputData.userId} not found`);
   },
 });
 
-const planActivities = createStep({
-  id: 'plan-activities',
-  description: 'Suggests activities based on weather conditions',
-  inputSchema: forecastSchema,
-  outputSchema: z.object({
-    activities: z.string(),
-  }),
-  execute: async ({ inputData, mastra }) => {
-    const forecast = inputData;
+const calculateWaterGoal = createStep({
+  id: "calculate-water-goal",
+  description: "Calculates the daily recommended water goal in ml",
+  inputSchema: userProfileSchema,
+  outputSchema: waterGoalSchema,
+  execute: async ({ inputData }) => {
+    const { weightKg, activityLevel } = inputData;
+    let baseMl = weightKg * 30; // 30ml per kg is a common baseline
 
-    if (!forecast) {
-      throw new Error('Forecast data not found');
+    // Adjust based on activity
+    switch (activityLevel) {
+      case "moderate":
+        baseMl += 300;
+        break;
+      case "active":
+        baseMl += 600;
+        break;
+      case "athlete":
+        baseMl += 1000;
+        break;
+      // 'sedentary' uses baseMl
     }
 
-    const agent = mastra?.getAgent('weatherAgent');
-    if (!agent) {
-      throw new Error('Weather agent not found');
-    }
-
-    const prompt = `Based on the following weather forecast for ${forecast.location}, suggest appropriate activities:
-      ${JSON.stringify(forecast, null, 2)}
-      For each day in the forecast, structure your response exactly as follows:
-
-      📅 [Day, Month Date, Year]
-      ═══════════════════════════
-
-      🌡️ WEATHER SUMMARY
-      • Conditions: [brief description]
-      • Temperature: [X°C/Y°F to A°C/B°F]
-      • Precipitation: [X% chance]
-
-      🌅 MORNING ACTIVITIES
-      Outdoor:
-      • [Activity Name] - [Brief description including specific location/route]
-        Best timing: [specific time range]
-        Note: [relevant weather consideration]
-
-      🌞 AFTERNOON ACTIVITIES
-      Outdoor:
-      • [Activity Name] - [Brief description including specific location/route]
-        Best timing: [specific time range]
-        Note: [relevant weather consideration]
-
-      🏠 INDOOR ALTERNATIVES
-      • [Activity Name] - [Brief description including specific venue]
-        Ideal for: [weather condition that would trigger this alternative]
-
-      ⚠️ SPECIAL CONSIDERATIONS
-      • [Any relevant weather warnings, UV index, wind conditions, etc.]
-
-      Guidelines:
-      - Suggest 2-3 time-specific outdoor activities per day
-      - Include 1-2 indoor backup options
-      - For precipitation >50%, lead with indoor activities
-      - All activities must be specific to the location
-      - Include specific venues, trails, or locations
-      - Consider activity intensity based on temperature
-      - Keep descriptions concise but informative
-
-      Maintain this exact formatting for consistency, using the emoji and section headers as shown.`;
-
-    const response = await agent.stream([
-      {
-        role: 'user',
-        content: prompt,
-      },
-    ]);
-
-    let activitiesText = '';
-
-    for await (const chunk of response.textStream) {
-      process.stdout.write(chunk);
-      activitiesText += chunk;
-    }
+    const dailyGoalMl = Math.round(baseMl / 100) * 100; // Round to nearest 100ml
 
     return {
-      activities: activitiesText,
+      dailyGoalMl,
+      reasoning: `Based on your weight (${weightKg}kg) and ${activityLevel} activity level, your base intake is ${
+        weightKg * 30
+      }ml. An additional ${
+        dailyGoalMl - weightKg * 30
+      }ml was added for activity.`,
     };
   },
 });
 
-const weatherWorkflow = createWorkflow({
-  id: 'weather-workflow',
+const generateReminders = createStep({
+  id: "generate-reminders",
+  description: "Uses an agent to create a personalized hydration schedule",
+  inputSchema: userProfileSchema.merge(waterGoalSchema), // Combine inputs from previous steps
+  outputSchema: reminderScheduleSchema,
+  execute: async ({ inputData, mastra }) => {
+    const { dailyGoalMl, weightKg, activityLevel, timezone } = inputData;
+
+    const agent = mastra?.getAgent("reminderAgent"); // Conceptual agent for generation
+    if (!agent) {
+      throw new Error("Reminder agent not found");
+    }
+
+    const prompt = `
+      Create a detailed, personalized water intake schedule for a user with the following profile:
+      - Daily Water Goal: ${dailyGoalMl}ml
+      - Weight: ${weightKg}kg
+      - Activity Level: ${activityLevel}
+      - Timezone: ${timezone}
+
+      Guidelines:
+      1. Distribute the total daily goal (${dailyGoalMl}ml) into 5 to 8 separate drinking events.
+      2. Reminders should start around 8:00 and end before 22:00 in the user's timezone.
+      3. Larger amounts should be suggested after the main morning and afternoon activity periods.
+      4. The total volume of all 'amountMl' fields must exactly equal ${dailyGoalMl}.
+      5. The 'message' should be encouraging and personalized (e.g., "Time for 300ml, stay focused on your goal!").
+
+      Output the schedule strictly as a JSON object that conforms to the 'reminderScheduleSchema' structure.
+    `;
+
+    // Agent executes the prompt and streams back the JSON schedule
+    const response = await agent.generate(prompt);
+
+    // Assume agent.generate returns the structured JSON output directly
+    const scheduleData = JSON.parse(response.text);
+
+    // Basic validation of the total volume before returning
+    const calculatedTotal = scheduleData.schedule.reduce(
+      (sum: number, item: { amountMl: number }) => sum + item.amountMl,
+      0
+    );
+    if (calculatedTotal !== dailyGoalMl) {
+      throw new Error("Agent failed to distribute the total volume correctly.");
+    }
+
+    return scheduleData;
+  },
+});
+
+// --- WORKFLOW ---
+
+const waterReminderWorkflow = createWorkflow({
+  id: "water-reminder-workflow",
   inputSchema: z.object({
-    city: z.string().describe('The city to get the weather for'),
+    userId: z
+      .string()
+      .describe("The ID of the user to generate a reminder schedule for"),
   }),
-  outputSchema: z.object({
-    activities: z.string(),
-  }),
+  outputSchema: reminderScheduleSchema,
 })
-  .then(fetchWeather)
-  .then(planActivities);
+  .then(retrieveUserProfile) // Output: userProfileSchema
+  .then(calculateWaterGoal) // Output: waterGoalSchema (Input: userProfileSchema)
+  .then(generateReminders); // Input: userProfileSchema + waterGoalSchema (implicitly merged by the framework)
 
-weatherWorkflow.commit();
+waterReminderWorkflow.commit();
 
-export { weatherWorkflow };
+export { waterReminderWorkflow };
